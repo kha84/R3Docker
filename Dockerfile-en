@@ -1,0 +1,73 @@
+#
+# https://medium.com/bb-tutorials-and-thoughts/docker-a-beginners-guide-to-dockerfile-with-a-sample-project-6c1ac1f17490
+#
+FROM ubuntu:22.04
+
+ARG alsa_input_device
+ARG alsa_output_device
+
+RUN apt update && apt install -y pipewire-audio-client-libraries alsa-utils vim git wget curl unzip psmisc python3.10-venv jq
+
+# make our PCM device a default one
+RUN echo " \n\
+pcm.!default {  \n\
+    type plug \n\
+    slave.pcm \"$alsa_output_device\" \n\ 
+} " >> /root/.asoundrc
+
+# clonning project
+WORKDIR /root
+RUN git clone https://github.com/rhasspy/rhasspy3 
+WORKDIR rhasspy3
+RUN git checkout f11b15fdfb29fb2f8274dae83db5909558012d1f
+
+# install and configure VAD
+RUN mkdir -p config/programs/vad/
+RUN cp -R programs/vad/silero config/programs/vad/
+RUN python3 -m venv config/programs/vad/silero/.venv
+RUN . config/programs/vad/silero/.venv/bin/activate
+RUN config/programs/vad/silero/script/setup
+
+# install and configure wakeword
+RUN mkdir -p config/programs/wake/
+RUN cp -R programs/wake/porcupine1 config/programs/wake/
+RUN config/programs/wake/porcupine1/script/setup
+
+# install and configure ASR
+RUN mkdir -p config/programs/asr/
+
+# whisper
+RUN cp -R programs/asr/faster-whisper config/programs/asr/
+RUN config/programs/asr/faster-whisper/script/setup
+# download a model file (try to run without parameters to see what models are there)
+RUN config/programs/asr/faster-whisper/script/download.py tiny-int8
+
+# install and configure TTS (piper so far)
+RUN mkdir -p config/programs/tts/
+RUN cp -R programs/tts/piper config/programs/tts/
+RUN config/programs/tts/piper/script/setup.py
+RUN config/programs/tts/piper/script/download.py en-us
+
+
+# make adjustments to configuration.yaml
+RUN apt install -y python3-pip
+RUN pip install yq
+RUN cp rhasspy3/configuration.yaml rhasspy3/configuration.yaml.bak
+# configure ASR in pipeline to use server
+RUN yq -iY '.pipelines.default.asr.name = "faster-whisper.client"' rhasspy3/configuration.yaml
+# configure TTS in pipeline to use server
+RUN yq -iY '.pipelines.default.tts.name = "piper.client"' rhasspy3/configuration.yaml
+
+# TODO: configure microphone and playback devices
+# RUN yq -iY '.pipelines.default.tts.name = "piper.client"' rhasspy3/configuration.yaml
+
+
+# configure HTTP server
+RUN script/setup_http_server
+
+# start server upon container creation
+COPY startup-en.sh startup.sh
+
+EXPOSE 13331
+
+CMD [ "./startup.sh" ]

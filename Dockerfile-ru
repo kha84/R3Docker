@@ -1,0 +1,98 @@
+#
+# https://medium.com/bb-tutorials-and-thoughts/docker-a-beginners-guide-to-dockerfile-with-a-sample-project-6c1ac1f17490
+#
+FROM ubuntu:22.04
+
+ARG alsa_input_device
+ARG alsa_output_device
+
+RUN apt update && apt install -y locales pipewire-audio-client-libraries alsa-utils vim git wget curl unzip psmisc python3.10-venv jq
+
+# Set locales to support Cyrillic fonts. Source: 
+# https://stackoverflow.com/questions/54884124/how-to-prevent-distorting-cyrillic-text-in-bash-running-in-a-docker-container
+RUN sed -i -e \
+  's/# ru_RU.UTF-8 UTF-8/ru_RU.UTF-8 UTF-8/' /etc/locale.gen \
+   && locale-gen
+ENV LANG ru_RU.UTF-8
+ENV LANGUAGE ru_RU:ru
+ENV LC_LANG ru_RU.UTF-8
+ENV LC_ALL ru_RU.UTF-8
+
+# make our PCM device a default one
+RUN echo " \n\
+pcm.!default {  \n\
+    type plug \n\
+    slave.pcm \"$alsa_output_device\" \n\ 
+} " >> /root/.asoundrc
+
+# clonning project
+WORKDIR /root
+RUN git clone https://github.com/rhasspy/rhasspy3 
+WORKDIR rhasspy3
+RUN git checkout f11b15fdfb29fb2f8274dae83db5909558012d1f
+
+# install and configure VAD
+RUN mkdir -p config/programs/vad/
+RUN cp -R programs/vad/silero config/programs/vad/
+RUN python3 -m venv config/programs/vad/silero/.venv
+RUN . config/programs/vad/silero/.venv/bin/activate
+RUN config/programs/vad/silero/script/setup
+
+# install and configure wakeword
+RUN mkdir -p config/programs/wake/
+RUN cp -R programs/wake/porcupine1 config/programs/wake/
+RUN config/programs/wake/porcupine1/script/setup
+
+# install and configure ASR
+RUN mkdir -p config/programs/asr/
+
+# whisper
+RUN cp -R programs/asr/faster-whisper config/programs/asr/
+RUN config/programs/asr/faster-whisper/script/setup
+# download a model file (try to run without parameters to see what models are there)
+RUN config/programs/asr/faster-whisper/script/download.py tiny-int8
+
+# vosk
+RUN cp -R programs/asr/vosk config/programs/asr/
+RUN config/programs/asr/vosk/script/setup
+# download a model file (try to run without parameters to see what models are there)
+RUN config/programs/asr/vosk/script/download.py small-en-us-0.15
+# manually download & unpack russian model to config/data/asr/vosk
+# see list of available models here - https://alphacephei.com/vosk/models
+RUN wget -O config/data/asr/vosk/vosk-model-small-ru-0.22.zip https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip --no-check-certificate
+RUN cd config/data/asr/vosk/ && unzip vosk-model-small-ru-0.22.zip && rm vosk-model-small-ru-0.22.zip && cd -
+# make an amendment in configuration.yaml 
+RUN apt install -y python3-pip
+RUN pip install yq
+RUN cp rhasspy3/configuration.yaml rhasspy3/configuration.yaml.bak
+RUN yq -iY '.servers.asr.vosk.template_args.model = "${data_dir}/vosk-model-small-ru-0.22"' rhasspy3/configuration.yaml
+RUN yq -iY '.programs.asr.vosk.template_args.model = "${data_dir}/vosk-model-small-ru-0.22"' rhasspy3/configuration.yaml
+# configure ASR in pipeline to use server
+RUN yq -iY '.pipelines.default.asr.name = "vosk.client"' rhasspy3/configuration.yaml
+
+# install and configure TTS (piper so far)
+RUN mkdir -p config/programs/tts/
+RUN cp -R programs/tts/piper config/programs/tts/
+RUN config/programs/tts/piper/script/setup.py
+# "uk" here stands for Ukranian
+RUN config/programs/tts/piper/script/download.py uk
+RUN yq -iY '.programs.tts.piper.template_args.model = "${data_dir}/uk-lada-low.onnx"' rhasspy3/configuration.yaml
+RUN yq -iY '.servers.tts.piper.template_args.model = "${data_dir}/uk-lada-low.onnx"' rhasspy3/configuration.yaml
+# configure TTS in pipeline to use server
+RUN yq -iY '.pipelines.default.tts.name = "piper.client"' rhasspy3/configuration.yaml
+
+# TODO: find a way to fit russian modle to piper or swap the piper to something like "Silero", which is also having a lot of other good models - https://habr.com/ru/post/660565/
+
+# TODO: configure microphone and playback devices
+# RUN yq -iY '.pipelines.default.tts.name = "piper.client"' rhasspy3/configuration.yaml
+
+
+# configure HTTP server
+RUN script/setup_http_server
+
+# start server upon container creation
+COPY startup-ru.sh startup.sh
+
+EXPOSE 13331
+
+CMD [ "./startup.sh" ]
