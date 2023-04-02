@@ -14,8 +14,8 @@ The purpose of this script is to detect your host configuration, create a proper
 Make sure you have `docker` and `alsa-utils` installed. Then:
 
 ```
-git clone ....
-cd xxxx
+git clone https://github.com/kha84/R3Docker
+cd Docker
 ./runme.sh
 ```
 
