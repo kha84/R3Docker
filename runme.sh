@@ -44,16 +44,27 @@ id | grep -q "(audio)" || { echo >&2 "Error: current user is not in the 'audio' 
 #######################################################
 
 # check what sound server we do have running
-if [[ -e "/run/user/$(id -u)/pipewire-0" ]]; then
-  echo "Looks like we're running Pipewire: found a unix socket file /run/user/$(id -u)/pipewire-0" 
+if [[ -e "/run/user/$(id -u)/pulse/native" ]]; then
+  echo "Looks like we're running Pulseaudio: found a unix socket file /run/user/$(id -u)/pulse/native" 
+  echo "Let's ask pactl what will it tell us"
+  command -v pactl>/dev/null 2>&1 || { echo >&2 "Error: 'pactl' is required to figure out what sound server you host is running, but it's not installed. Please consider to install it. Aborting."; exit 1; }
+  pa_server_name=$(pactl info | grep -oP "Server Name: \K.*")
+  if echo "$pa_server_name" | grep -iq "pipewire" ; then
+    echo "Your host is actually running Pipewire as main sound server. PulseAudio is there just for compatibility. But the primary thing is stil Pipewire. We are going to use that"
+    SOUND_SERVER=pipewire
+    alsa_input_device=pipewire
+    alsa_output_device=pipewire
+  else
+    echo "Your host is running Pulseaudio as main sound server"
+    SOUND_SERVER=pulse
+    alsa_input_device=pulse
+    alsa_output_device=pulse
+  fi
+elif [[ -e "/run/user/$(id -u)/pipewire-0" ]]; then
+  echo "Looks like we're running Pipewire: found a unix socket file /run/user/$(id -u)/pipewire-0"
   SOUND_SERVER=pipewire
   alsa_input_device=pipewire
   alsa_output_device=pipewire
-elif [[ -e "/run/user/$(id -u)/pulse/native" ]]; then
-  echo "Looks like we're running Pulseaudio: found a unix socket file /run/user/$(id -u)/pulse/native" 
-  SOUND_SERVER=pulseaudio
-  alsa_input_device=pulseaudio
-  alsa_output_device=pulseaudio
 else
   echo "Sound server unix socket file is not found for current user. Using ALSA mode"
   pgrep -x pipewire && echo "Warning: Pipewire is found running (prob under user other than $USER). It might be locking ALSA devices"
@@ -61,6 +72,14 @@ else
   SOUND_SERVER=alsa
 fi
 continue_prompt "Do you want to continue with the suggested settings?"
+
+#######################################################
+# Now lets give user a chance to test his audio:      #
+# we are going to test the output device first        #
+# and once it has been selected we are going to test  #
+# the input device                                    #
+#######################################################
+
 
 # if user selected ALSA, let him pick proper ALSA PCM devices for input and output
 if [ "$SOUND_SERVER" == "alsa" ]; then
@@ -126,11 +145,24 @@ if [ "$SOUND_SERVER" == "alsa" ]; then
     exit 1
   fi
 
+elif [ "$SOUND_SERVER" == "pipewire" ]; then
+
+  echo "Sorry, testing of pipewire devices was not yet implemented"
+  # TODO
+
+elif [ "$SOUND_SERVER" == "pulse" ]; then
+
+  echo "Sorry, testing of Pulseaudio devices was not yet implemented"
+  # TODO
+
 fi
 
+
+
 #######################################################
-# Support for cyrillic languages                      #
+# Support for cyrillic console and TTS/ASR models     #
 #######################################################
+
 # If the user confirms that they can hear the sound, output the device name and exit
 read -p "Install russian locales and ASR/TTS models? (Y/N) " -n 1 -r
 echo
@@ -175,7 +207,7 @@ fi
 if [ "$SOUND_SERVER" == "pipewire" ]; then
     docker run -d -v /run/user/1000/pipewire-0:/tmp/pipewire-0 -e XDG_RUNTIME_DIR=/tmp --publish 13331:13331 $IMAGE_NAME
     ec=$?
-elif [ "$SOUND_SERVER" == "pulseaudio" ]; then
+elif [ "$SOUND_SERVER" == "pulse" ]; then
     docker run -d -v /run/user/1000/pulse/native:/run/user/1000/pulse/native -e PULSE_SERVER=unix:/run/user/1000/pulse/native --publish 13331:13331 $IMAGE_NAME  
     ec=$?
 elif [ "$SOUND_SERVER" == "alsa" ]; then
